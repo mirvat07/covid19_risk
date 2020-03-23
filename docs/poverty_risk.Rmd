@@ -1,0 +1,148 @@
+---
+title: "COVID-19 Risk Factor Mapping - Poverty Among Residents 65 and Older"
+author: "Christopher Prener, Ph.D."
+date: '(`r format(Sys.time(), "%B %d, %Y")`)'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(leaflet)
+library(biscale)
+library(readr)
+library(here)
+library(sf)
+
+zips <- st_read(here("data", "spatial", "zips.geojson"), crs = 4326, stringsAsFactors = FALSE) %>%
+  rename(GEOID = GEOID10) %>%
+  mutate(GEOID = as.numeric(GEOID)) %>%
+  filter(GEOID %in% c(63010, 63045, 63155) == FALSE)
+
+poverty <- read_csv(here("data", "demographics", "poverty2.csv"))
+
+over65 <- read_csv(here("data", "mortality", "mortality_over65.csv")) %>%
+  left_join(poverty, ., by = "GEOID") %>%
+  left_join(zips, ., by = "GEOID")
+
+rm(zips, poverty)
+```
+
+## Update
+This is a companion to the report generated on March 15th. It presents the percentage of residents 65 and older who are living below the federal poverty line, and compares it to the chronic disease mortality burden for individuals in the same age group.
+
+## Background
+This interactive report contains demographic data drawn from the 2014-2018 American Community Survey's 5-year estimates for Zip Code Tabulation Areas (ZCTA). These are not *exactly* the same as zip codes, but are used to provide standard demographic estimates that roughly correspond to zip code coverage areas. Both the count of individuals living below the federal poverty line and the county of individuals 65 and over were converted to rates per 1,000.
+
+Mortality data are drawn from the [Missouri Information for Community Assessment](https://healthapps.dhss.mo.gov/MoPhims/MICAHome). The following four categories were used, following recent [Kaiser Family Foundation](https://www.kff.org/global-health-policy/press-release/about-4-in-10-adults-in-the-u-s-are-at-greater-risk-of-developing-serious-illness-if-infected-with-coronavirus-due-to-age-or-underlying-health-conditions/) analyses of COVID-19 risk factors: Cancer, COPD, Diabetes, and Heart Disease. Mortality counts for each category were pooled for 2014-2018 and then summed to create a single measure of mortality for the entire population and for those 65 and over, expressed as a rate per 1,000.
+
+<br>
+
+## Percent Living in Poverty
+This map presents the percentage of individuals 65 and over living under the poverty line in each ZCTA:
+
+```{r over65, echo=FALSE, out.width = '100%'}
+# create color palette
+pal <- colorNumeric("Blues", over65$poverty_pct_over65)
+
+over65 %>%
+  leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    color = "#444444", 
+    weight = 1, 
+    opacity = 1.0, 
+    smoothFactor = 0.5,
+    fillOpacity = 0.5,
+    fillColor = ~pal(poverty_pct_over65),
+    highlightOptions = highlightOptions(color = "white", weight = 2, bringToFront = TRUE),
+    popup = paste("<b>Zip Code:</b> ", over65$GEOID, "<br>",
+                  "<b>65 and Over Population:</b> ", over65$over65, "<br>",
+                  "<b>% < Poverty Line:</b> ", round(over65$poverty_pct_over65, digits = 2))) %>%
+    addLegend(pal = pal, values = ~poverty_pct_over65, opacity = .5, title = "% < Poverty Line")
+```
+
+<br>
+
+### Mortality Rate
+This map presents the mortality rate for individuals 65 and over:
+
+```{r over65-mortality, echo=FALSE, out.width = '100%'}
+# create color palette
+pal <- colorNumeric("Reds", over65$mortality_rate)
+
+over65 %>%
+  leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    color = "#444444", 
+    weight = 1, 
+    opacity = 1.0, 
+    smoothFactor = 0.5,
+    fillOpacity = 0.5,
+    fillColor = ~pal(mortality_rate),
+    highlightOptions = highlightOptions(color = "white", weight = 2, bringToFront = TRUE),
+    popup = paste("<b>Zip Code:</b> ", over65$GEOID, "<br>",
+                  "<b>65 and Over Population:</b> ", over65$over65, "<br>",
+                  "<b>Pooled Mortality Count:</b> ", over65$mortality, "<br>",
+                  "<b>Mortality Rate per 1,000:</b> ", round(over65$mortality_rate, digits = 2))) %>%
+    addLegend(pal = pal, values = ~mortality_rate, opacity = .5, title = "Mortality Rate")
+```
+
+<br>
+
+### Bi-variate Map
+This map compares mortality and population rates for those 65 and over. Areas that are dark violent have both high mortality rates and a high percentage of individuals 65 and over who are living below the federal poverty line.
+
+```{r bivariate-legend, echo=FALSE, out.width = '50%'}
+bi_legend(pal = "DkViolet", dim = 3,
+                    xlab = "65 and Over Mortality Rate",
+                    ylab = "% < Poverty Line, 65 and Over",
+                    size = 16)
+```
+
+
+
+```{r bivariate-over65, echo=FALSE, out.width = '100%'}
+# create palette
+pal_df <- bi_class(over65, x = mortality_rate, y = poverty_pct_over65, style = "quantile", dim = 3)
+
+pal <- tibble(
+  bi_class = c("1-1", "1-2", "1-3",
+               "2-1", "2-2", "2-3",
+               "3-1", "3-2", "3-3"),
+  fill = c("#CABED0", "#89A1C8", "#4885C1",
+           "#BC7C8F", "#806A8A", "#435786",
+           "#AE3A4E", "#77324C", "#3F2949"),
+  name = c("lower over 65 mortality rate, lower % below poverty line",
+           "lower over 65 mortality  rate, moderate % below poverty line",
+           "lower over 65 mortality rate, higher % below poverty line",
+           "moderate over 65 mortality rate, lower % below poverty line",
+           "moderate over 65 mortality rate, moderate % below poverty line",
+           "moderate over 65 mortality rate, higher % below poverty line",
+           "higher over 65 mortality rate, lower % below poverty line",
+           "higher over 65 mortality rate, moderate % below poverty line",
+           "higher over 65 mortality rate, higher % below poverty line")
+  )
+
+pal_df <- left_join(pal_df, pal, by = "bi_class")
+pal_df <- mutate(pal_df, bi_class = as.factor(bi_class))
+
+factpal <- colorFactor(pal$fill, pal_df$bi_class)
+
+pal_df %>%
+  leaflet() %>%
+  addProviderTiles(providers$CartoDB.Positron) %>%
+  addPolygons(
+    color = "#444444", 
+    weight = 1, 
+    opacity = 1.0, 
+    smoothFactor = 0.5,
+    fillOpacity = 0.7,
+    fillColor = ~factpal(bi_class),
+    popup = paste("<b>Zip Code:</b> ", pal_df$GEOID, "<br>",
+                  "<b>% < Poverty Line:</b> ", round(over65$poverty_pct_over65, digits = 2), "<br>",
+                  "<b>Mortality Rate per 1,000:</b> ", round(over65$mortality_rate, digits = 2), "<br>",
+                  "<b>Category:</b> ", pal_df$name))
+```
+
+<br>
