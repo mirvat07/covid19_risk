@@ -1,0 +1,273 @@
+---
+title: "COVID-19 Risk Factor Data Cleaning"
+author: "Christopher Prener, Ph.D."
+date: '(`r format(Sys.time(), "%B %d, %Y")`)'
+output: html_document
+---
+
+## Introduction
+This notebook completes the data cleaning work for this project.
+
+## Dependencies
+The following packages are needed for this part of the project:
+
+```{r load-dependencies}
+# tidyverse
+library(dplyr)       # data wrangling
+library(readr)       # read and write csv files
+
+# spatial packages
+library(sf)          # spatial tools
+library(tidycensus)  # download demographic data
+library(tigris)      # download geometric data
+
+# other packages
+library(here)        # file path management
+```
+
+## Geometric Data
+### Download
+First, we'll download the raw zip code data for the U.S.:
+
+```{r get-zips}
+zip <- zctas(year = 2018, class = "sf") %>%
+  st_transform(crs = 26915)
+```
+
+We'll also download county data for Missouri:
+
+```{r get-counties}
+counties <- counties(state = 29, year = 2018, class = "sf") %>%
+  filter(COUNTYFP %in% c("183", "189", "510")) %>%
+  st_transform(crs = 26915)
+```
+
+### Geoprocess
+With our data downloaded we can intersect them to identify zips within St. Louis County, St. Louis City, and St. Charles County:
+
+```{r process-zips}
+# intersect
+intersect <- st_intersection(zip, counties)
+
+# remove stragglers
+zip_stl <- filter(zip, GEOID10 %in% intersect$GEOID10) %>%
+  filter(GEOID10 >= 63000) %>% # exclude zips in IL
+  filter(GEOID10 %in% c(63073, 63055, 63090) == FALSE) %>% # exclude sw zips
+  filter(GEOID10 %in% c(63390, 63379, 63362, 63369) == FALSE) %>% # exclude nw zips
+  select(GEOID10)
+```
+
+With them clean, we'll write them:
+
+```{r write-zips}
+zip_stl %>%
+  st_transform(crs = 4326) %>%
+  st_write(., here("data", "spatial", "zips.geojson"), delete_dsn = TRUE)
+```
+
+## Demographic Data
+### Downloald Poverty Data
+First, we'll calculate poverty rates for each zip code. We need to download the data and rename variables:
+
+```{r}
+poverty <- get_acs(table = "B17001", geography = "zcta", output = "wide") %>%
+  filter(GEOID %in% zip_stl$GEOID10) %>%
+  select(GEOID, B17001_001E, B17001_001M, B17001_002E, B17001_002M) %>%
+  rename(
+    total = B17001_001E, 
+    total_moe = B17001_001M, 
+    poverty = B17001_002E, 
+    poverty_moe = B17001_002M
+  )
+```
+
+### Download Age Data
+We'll repeat the process for age, but will need to calculate across a lot of columns to figure out the proportion of folks over 65 years in age:
+
+```{r}
+age <- get_acs(table = "B01001", geography = "zcta", output = "wide") %>%
+  filter(GEOID %in% zip_stl$GEOID10) %>%
+  select(GEOID, B01001_001E, B01001_001M, 
+         B01001_020E, B01001_021E, B01001_022E, B01001_023E, B01001_024E, B01001_025E,
+         B01001_044E, B01001_045E, B01001_046E, B01001_047E, B01001_048E, B01001_049E) %>%
+  mutate(over65 = B01001_020E + B01001_021E + B01001_022E + B01001_023E + B01001_024E + B01001_025E +
+           B01001_044E + B01001_045E + B01001_046E + B01001_047E + B01001_048E + B01001_049E) %>%
+  select(GEOID, B01001_001E, B01001_001M, over65) %>%
+  rename(
+    total = B01001_001E,
+    total_moe = B01001_001M
+  )
+```
+
+## Mortality Data
+We're going to process mortality data both for all adults and only those over 65.
+
+### Cancer
+We'll start by processing cancer data:
+
+```{r process-cancer}
+# cancer, all
+cancer <- read_csv(here("data", "mortality", "raw", "cancer_all.csv"), skip = 2) %>%
+  rename(
+    GEOID = `Year:`,
+    total_cancer = `Total for selection`
+  ) %>%
+  filter(GEOID %in% c("Statistics:", "Zip / ZCTA") == FALSE) %>%
+  slice(1:(n()-6)) %>%
+  select(GEOID, total_cancer) %>%
+  mutate(total_cancer = as.numeric(total_cancer))
+
+# cancer, over65
+cancer65 <- read_csv(here("data", "mortality", "raw", "cancer_over65.csv"), skip = 2) %>%
+  rename(
+    GEOID = `Year:`,
+    total_cancer65 = `Total for selection`
+  ) %>%
+  filter(GEOID %in% c("Statistics:", "Zip / ZCTA") == FALSE) %>%
+  slice(1:(n()-6)) %>%
+  select(GEOID, total_cancer65) %>%
+  mutate(total_cancer65 = as.numeric(total_cancer65))
+```
+
+### COPD
+Next, we'll process data on COPD, a respritory aliment:
+
+```{r process-copd}
+# copd, all
+copd <- read_csv(here("data", "mortality", "raw", "copd_all.csv"), skip = 2) %>%
+  rename(
+    GEOID = `Year:`,
+    total_copd = `Total for selection`
+  ) %>%
+  filter(GEOID %in% c("Statistics:", "Zip / ZCTA") == FALSE) %>%
+  slice(1:(n()-6)) %>%
+  select(GEOID, total_copd) %>%
+  mutate(total_copd = as.numeric(total_copd))
+
+# copd, over65
+copd65 <- read_csv(here("data", "mortality", "raw", "copd_over65.csv"), skip = 2) %>%
+  rename(
+    GEOID = `Year:`,
+    total_copd65 = `Total for selection`
+  ) %>%
+  filter(GEOID %in% c("Statistics:", "Zip / ZCTA") == FALSE) %>%
+  slice(1:(n()-6)) %>%
+  select(GEOID, total_copd65) %>%
+  mutate(total_copd65 = as.numeric(total_copd65))
+```
+
+### Diabetes
+Next, we'll process data on mortality due to diabetes:
+
+```{r process-diabetes}
+# diabetes, all
+diabetes <- read_csv(here("data", "mortality", "raw", "diabetes_all.csv"), skip = 2) %>%
+  rename(
+    GEOID = `Year:`,
+    total_diabetes = `Total for selection`
+  ) %>%
+  filter(GEOID %in% c("Statistics:", "Zip / ZCTA") == FALSE) %>%
+  slice(1:(n()-6)) %>%
+  select(GEOID, total_diabetes) %>%
+  mutate(total_diabetes = as.numeric(total_diabetes))
+
+# diabetes, over65
+diabetes65 <- read_csv(here("data", "mortality", "raw", "diabetes_over65.csv"), skip = 2) %>%
+  rename(
+    GEOID = `Year:`,
+    total_diabetes65 = `Total for selection`
+  ) %>%
+  filter(GEOID %in% c("Statistics:", "Zip / ZCTA") == FALSE) %>%
+  slice(1:(n()-6)) %>%
+  select(GEOID, total_diabetes65) %>%
+  mutate(total_diabetes65 = as.numeric(total_diabetes65))
+```
+
+### Heart Disease
+Finally, we'll process data on heart disease mortality:
+
+```{r process-heart-disease}
+# heart disease, all
+heart <- read_csv(here("data", "mortality", "raw", "heart_disease_all.csv"), skip = 2) %>%
+  rename(
+    GEOID = `Year:`,
+    total_heart = `Total for selection`
+  ) %>%
+  filter(GEOID %in% c("Statistics:", "Zip / ZCTA") == FALSE) %>%
+  slice(1:(n()-6)) %>%
+  select(GEOID, total_heart) %>%
+  mutate(total_heart = as.numeric(total_heart))
+
+# heart disease, over65
+heart65 <- read_csv(here("data", "mortality", "raw", "heart_disease_over65.csv"), skip = 2) %>%
+  rename(
+    GEOID = `Year:`,
+    total_heart65 = `Total for selection`
+  ) %>%
+  filter(GEOID %in% c("Statistics:", "Zip / ZCTA") == FALSE) %>%
+  slice(1:(n()-6)) %>%
+  select(GEOID, total_heart65) %>%
+  mutate(total_heart65 = as.numeric(total_heart65))
+```
+
+### Combine Mortality Data
+With all our mortality data complete, we'll combine it together. There are a couple zip codes we don't want to include on our map, so we'll subset those out as well:
+
+```{r combine-mortality}
+# join all
+left_join(cancer, copd, by = "GEOID") %>%
+  left_join(., diabetes, by = "GEOID") %>%
+  left_join(., heart, by = "GEOID") %>%
+  filter(GEOID %in% c("63010", "63045", "63155") == FALSE) -> mortality_all
+
+# join over 65
+left_join(cancer65, copd65, by = "GEOID") %>%
+  left_join(., diabetes65, by = "GEOID") %>%
+  left_join(., heart65, by = "GEOID") %>%
+  filter(GEOID %in% c("63010", "63045", "63155") == FALSE) -> mortality_over65
+
+# clean-up
+rm(cancer, cancer65, copd, copd65, diabetes, diabetes65, heart, heart65)
+```
+
+## Combine Demographic and Mortality Data
+With our mortality data cleaned, we'll combine it with our demographic data:
+
+```{r combine-with-demos}
+# join demographics
+mortality_all <- left_join(poverty, mortality_all, by = "GEOID")
+mortality_over65 <- left_join(age, mortality_over65, by = "GEOID")
+
+# clean-up
+rm(age, poverty)
+```
+
+Next, we'll calculate totals as well as rates per 1000 residents:
+
+```{r calculate-rates}
+# calculate totals and rates
+mortality_all %>%
+  rowwise() %>%
+  mutate(mortality = sum(total_cancer, total_copd, total_diabetes, total_heart, na.rm=TRUE)) %>%
+  ungroup() %>%
+  mutate(mortality_rate = mortality/total*1000) %>%
+  mutate(poverty_rate = poverty/total*1000) %>%
+  select(GEOID, total, total_moe, poverty, poverty_moe, poverty_rate, everything()) -> mortality_all
+
+mortality_over65 %>%
+  rowwise() %>%
+  mutate(mortality = sum(total_cancer65, total_copd65, total_diabetes65, total_heart65, na.rm=TRUE)) %>%
+  ungroup() %>%
+  mutate(over65_rate = over65/total*1000) %>%
+  mutate(mortality_rate = mortality/over65*1000) %>%
+  select(GEOID, total, total_moe, over65, over65_rate, everything()) -> mortality_over65
+```
+
+Finally, we'll write our cleaned data:
+
+```{r write-clean}
+# write data
+write_csv(mortality_all, here("data", "mortality", "mortality_all.csv"))
+write_csv(mortality_over65, here("data", "mortality", "mortality_over65.csv"))
+```
+
